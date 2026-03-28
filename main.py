@@ -1,9 +1,11 @@
 from datetime import date
 from typing import Optional
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Depends
+from sqlalchemy import func
+from sqlalchemy.orm import Session
 
-from db import supabase
+from db import get_db, NormaGeneralDB
 from schemas import Norma, NormasResponse
 
 app = FastAPI(
@@ -25,93 +27,78 @@ def list_normas(
     search: Optional[str] = Query(None, description="Full-text search on the norm title"),
     offset: int = Query(0, ge=0),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    db: Session = Depends(get_db),
 ):
     """List normas generales with optional filters."""
-    query = supabase.table("normas_generales").select("*", count="exact")
+    query = db.query(NormaGeneralDB)
+    count_query = db.query(func.count(NormaGeneralDB.id))
 
     if date_from:
-        query = query.gte("date", date_from.isoformat())
+        query = query.filter(NormaGeneralDB.date >= date_from)
+        count_query = count_query.filter(NormaGeneralDB.date >= date_from)
     if date_to:
-        query = query.lte("date", date_to.isoformat())
+        query = query.filter(NormaGeneralDB.date <= date_to)
+        count_query = count_query.filter(NormaGeneralDB.date <= date_to)
     if ministry:
-        query = query.ilike("ministry", f"%{ministry}%")
+        query = query.filter(NormaGeneralDB.ministry.ilike(f"%{ministry}%"))
+        count_query = count_query.filter(NormaGeneralDB.ministry.ilike(f"%{ministry}%"))
     if branch:
-        query = query.ilike("branch", f"%{branch}%")
+        query = query.filter(NormaGeneralDB.branch.ilike(f"%{branch}%"))
+        count_query = count_query.filter(NormaGeneralDB.branch.ilike(f"%{branch}%"))
     if search:
-        query = query.ilike("title", f"%{search}%")
+        query = query.filter(NormaGeneralDB.title.ilike(f"%{search}%"))
+        count_query = count_query.filter(NormaGeneralDB.title.ilike(f"%{search}%"))
 
-    query = query.order("date", desc=True).range(offset, offset + limit - 1)
+    total = count_query.scalar()
+    rows = query.order_by(NormaGeneralDB.date.desc()).offset(offset).limit(limit).all()
 
-    result = query.execute()
+    print('rows:', rows)
 
-    return NormasResponse(
-        count=result.count if result.count is not None else len(result.data),
-        data=result.data,
-    )
+    return NormasResponse(count=total, data=rows)
 
 
 @app.get("/normas/{cve}", response_model=Norma)
-def get_norma_by_cve(cve: str):
+def get_norma_by_cve(cve: str, db: Session = Depends(get_db)):
     """Get a single norma by its CVE code."""
-    result = (
-        supabase.table("normas_generales")
-        .select("*")
-        .eq("cve", cve)
-        .execute()
-    )
-
-    if not result.data:
+    row = db.query(NormaGeneralDB).filter(NormaGeneralDB.cve == cve).first()
+    if not row:
         raise HTTPException(status_code=404, detail="Norma not found")
-
-    return result.data[0]
+    return row
 
 
 @app.get("/normas/dates/available", response_model=list[str])
 def list_available_dates(
     limit: int = Query(30, ge=1, le=365),
+    db: Session = Depends(get_db),
 ):
     """List distinct dates that have published normas, most recent first."""
-    result = (
-        supabase.table("normas_generales")
-        .select("date")
-        .order("date", desc=True)
-        .limit(1000)
-        .execute()
+    rows = (
+        db.query(NormaGeneralDB.date)
+        .distinct()
+        .order_by(NormaGeneralDB.date.desc())
+        .limit(limit)
+        .all()
     )
-
-    seen = []
-    for row in result.data:
-        d = row["date"]
-        if d not in seen:
-            seen.append(d)
-        if len(seen) >= limit:
-            break
-
-    return seen
+    return [row.date.isoformat() for row in rows]
 
 
 @app.get("/normas/stats/by-ministry", response_model=list[dict])
 def stats_by_ministry(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    db: Session = Depends(get_db),
 ):
     """Get count of normas grouped by ministry for a date range."""
-    query = supabase.table("normas_generales").select("ministry")
+    query = db.query(
+        NormaGeneralDB.ministry,
+        func.count(NormaGeneralDB.id).label("count"),
+    )
 
     if date_from:
-        query = query.gte("date", date_from.isoformat())
+        query = query.filter(NormaGeneralDB.date >= date_from)
     if date_to:
-        query = query.lte("date", date_to.isoformat())
+        query = query.filter(NormaGeneralDB.date <= date_to)
 
-    result = query.limit(10000).execute()
+    rows = query.group_by(NormaGeneralDB.ministry).order_by(func.count(NormaGeneralDB.id).desc()).all()
 
-    counts: dict[str, int] = {}
-    for row in result.data:
-        m = row["ministry"] or "Unknown"
-        counts[m] = counts.get(m, 0) + 1
-
-    return sorted(
-        [{"ministry": k, "count": v} for k, v in counts.items()],
-        key=lambda x: x["count"],
-        reverse=True,
-    )
+    return [{"ministry": row.ministry or "Unknown", "count": row.count} for row in rows]
