@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine, Column, BigInteger, Date, Text, func
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy import create_engine, Column, BigInteger, Date, Text, ForeignKey, DateTime
+from sqlalchemy.orm import sessionmaker, DeclarativeBase, relationship
 
 from config import settings
 
@@ -24,6 +24,41 @@ class NormaGeneralDB(Base):
     pdf_url = Column(Text)
     cve = Column(Text, unique=True, nullable=False)
     created_at = Column(Text)
+
+
+class ReglamentoDB(Base):
+    __tablename__ = "reglamentos"
+
+    id = Column(BigInteger, primary_key=True)
+    numero = Column(Text, nullable=False)
+    anio = Column(Text, nullable=False)
+    ministerio = Column(Text, nullable=False)
+    subsecretaria = Column(Text)
+    materia = Column(Text)
+    fecha_ingreso = Column(Date)
+    estado = Column(Text)
+    categoria = Column(Text, nullable=False)
+    created_at = Column(DateTime)
+    updated_at = Column(DateTime)
+
+    etapas = relationship("ReglamentoEtapaDB", back_populates="reglamento", order_by="ReglamentoEtapaDB.etapa")
+
+
+class ReglamentoEtapaDB(Base):
+    __tablename__ = "reglamentos_etapas"
+
+    id = Column(BigInteger, primary_key=True)
+    reglamento_id = Column(BigInteger, ForeignKey("reglamentos.id", ondelete="CASCADE"), nullable=False)
+    etapa = Column(Text)
+    fecha = Column(Date)
+    accion = Column(Text)
+    sector = Column(Text)
+    observaciones = Column(Text)
+    documento = Column(Text)
+    documento_url = Column(Text)
+    created_at = Column(DateTime)
+
+    reglamento = relationship("ReglamentoDB", back_populates="etapas")
 
 
 def get_db():

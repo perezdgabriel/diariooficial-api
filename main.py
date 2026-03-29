@@ -2,16 +2,20 @@ from datetime import date
 from typing import Optional
 
 from fastapi import FastAPI, Query, HTTPException, Depends
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, case
+from sqlalchemy.orm import Session, joinedload
 
-from db import get_db, NormaGeneralDB
-from schemas import Norma, NormasResponse
+from db import get_db, NormaGeneralDB, ReglamentoDB, ReglamentoEtapaDB
+from schemas import (
+    Norma, NormasResponse,
+    Reglamento, ReglamentoDetail, ReglamentosResponse,
+    ReglamentoStats, ReglamentoTimeline,
+)
 
 app = FastAPI(
-    title="Diario Oficial de Chile — Normas Generales API",
-    description="Public API to query normas generales published in the Diario Oficial de Chile.",
-    version="1.0.0",
+    title="Diario Oficial de Chile — API",
+    description="Public API to query normas generales and CGR reglamentos.",
+    version="2.0.0",
 )
 
 DEFAULT_LIMIT = 50
@@ -102,3 +106,248 @@ def stats_by_ministry(
     rows = query.group_by(NormaGeneralDB.ministry).order_by(func.count(NormaGeneralDB.id).desc()).all()
 
     return [{"ministry": row.ministry or "Unknown", "count": row.count} for row in rows]
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REGLAMENTOS  — CGR Tramitación de Reglamentos
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/reglamentos", response_model=ReglamentosResponse, tags=["Reglamentos"])
+def list_reglamentos(
+    categoria: Optional[str] = Query(None, description="en_tramite, tramitados, retirados"),
+    ministerio: Optional[str] = Query(None, description="Partial match on ministerio"),
+    subsecretaria: Optional[str] = Query(None, description="Partial match on subsecretaría"),
+    search: Optional[str] = Query(None, description="Search in materia"),
+    anio: Optional[str] = Query(None, description="Filter by año del reglamento"),
+    estado: Optional[str] = Query(None, description="Filter by estado (partial match)"),
+    date_from: Optional[date] = Query(None, description="Fecha ingreso from (YYYY-MM-DD)"),
+    date_to: Optional[date] = Query(None, description="Fecha ingreso to (YYYY-MM-DD)"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
+    db: Session = Depends(get_db),
+):
+    """List reglamentos with filters."""
+    q = db.query(ReglamentoDB)
+    cq = db.query(func.count(ReglamentoDB.id))
+
+    filters = []
+    if categoria:
+        filters.append(ReglamentoDB.categoria == categoria)
+    if ministerio:
+        filters.append(ReglamentoDB.ministerio.ilike(f"%{ministerio}%"))
+    if subsecretaria:
+        filters.append(ReglamentoDB.subsecretaria.ilike(f"%{subsecretaria}%"))
+    if search:
+        filters.append(ReglamentoDB.materia.ilike(f"%{search}%"))
+    if anio:
+        filters.append(ReglamentoDB.anio == anio)
+    if estado:
+        filters.append(ReglamentoDB.estado.ilike(f"%{estado}%"))
+    if date_from:
+        filters.append(ReglamentoDB.fecha_ingreso >= date_from)
+    if date_to:
+        filters.append(ReglamentoDB.fecha_ingreso <= date_to)
+
+    for f in filters:
+        q = q.filter(f)
+        cq = cq.filter(f)
+
+    total = cq.scalar()
+    rows = q.order_by(ReglamentoDB.fecha_ingreso.desc()).offset(offset).limit(limit).all()
+    return ReglamentosResponse(count=total, data=rows)
+
+
+@app.get("/reglamentos/recientes", response_model=list[ReglamentoTimeline], tags=["Reglamentos"])
+def reglamentos_recientes(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Reglamentos with the most recent activity (last etapa date).
+    Useful to know which regulations had movement most recently."""
+    ultima = (
+        db.query(
+            ReglamentoEtapaDB.reglamento_id,
+            func.max(ReglamentoEtapaDB.fecha).label("ultima_fecha"),
+            func.count(ReglamentoEtapaDB.id).label("total_etapas"),
+        )
+        .group_by(ReglamentoEtapaDB.reglamento_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(
+            ReglamentoDB,
+            ultima.c.ultima_fecha,
+            ultima.c.total_etapas,
+        )
+        .join(ultima, ReglamentoDB.id == ultima.c.reglamento_id)
+        .order_by(desc(ultima.c.ultima_fecha))
+        .limit(limit)
+        .all()
+    )
+
+    # Get the last action per reglamento
+    result = []
+    for reg, ultima_fecha, total_etapas in rows:
+        last_etapa = (
+            db.query(ReglamentoEtapaDB)
+            .filter(
+                ReglamentoEtapaDB.reglamento_id == reg.id,
+                ReglamentoEtapaDB.fecha == ultima_fecha,
+            )
+            .order_by(ReglamentoEtapaDB.etapa.desc())
+            .first()
+        )
+        result.append(ReglamentoTimeline(
+            reglamento_id=reg.id,
+            numero=reg.numero,
+            anio=reg.anio,
+            ministerio=reg.ministerio,
+            materia=reg.materia,
+            categoria=reg.categoria,
+            estado=reg.estado,
+            ultima_etapa_fecha=ultima_fecha,
+            ultima_etapa_accion=last_etapa.accion if last_etapa else None,
+            total_etapas=total_etapas,
+        ))
+
+    return result
+
+
+@app.get("/reglamentos/stats/por-ministerio", response_model=list[ReglamentoStats], tags=["Reglamentos"])
+def reglamentos_stats_por_ministerio(
+    categoria: Optional[str] = Query(None, description="en_tramite, tramitados, retirados"),
+    db: Session = Depends(get_db),
+):
+    """Count of reglamentos per ministerio, optionally filtered by categoría."""
+    q = db.query(
+        ReglamentoDB.ministerio,
+        func.count(ReglamentoDB.id).label("count"),
+    )
+    if categoria:
+        q = q.filter(ReglamentoDB.categoria == categoria)
+
+    rows = q.group_by(ReglamentoDB.ministerio).order_by(desc("count")).all()
+    return [ReglamentoStats(ministerio=r.ministerio, count=r.count) for r in rows]
+
+
+@app.get("/reglamentos/stats/por-categoria", tags=["Reglamentos"])
+def reglamentos_stats_por_categoria(db: Session = Depends(get_db)):
+    """Count of reglamentos per categoría (en_tramite, tramitados, retirados)."""
+    rows = (
+        db.query(
+            ReglamentoDB.categoria,
+            func.count(ReglamentoDB.id).label("count"),
+        )
+        .group_by(ReglamentoDB.categoria)
+        .order_by(desc("count"))
+        .all()
+    )
+    return [{"categoria": r.categoria, "count": r.count} for r in rows]
+
+
+@app.get("/reglamentos/stats/tiempo-tramitacion", tags=["Reglamentos"])
+def reglamentos_tiempo_tramitacion(
+    categoria: Optional[str] = Query("tramitados"),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Reglamentos ranked by how long they took (difference between first and last etapa).
+    Defaults to tramitados category. Shows which regulations took the longest to process."""
+    primera = (
+        db.query(
+            ReglamentoEtapaDB.reglamento_id,
+            func.min(ReglamentoEtapaDB.fecha).label("primera_fecha"),
+            func.max(ReglamentoEtapaDB.fecha).label("ultima_fecha"),
+            func.count(ReglamentoEtapaDB.id).label("total_etapas"),
+        )
+        .group_by(ReglamentoEtapaDB.reglamento_id)
+        .subquery()
+    )
+
+    q = (
+        db.query(
+            ReglamentoDB,
+            primera.c.primera_fecha,
+            primera.c.ultima_fecha,
+            primera.c.total_etapas,
+            (func.extract("epoch", primera.c.ultima_fecha) - func.extract("epoch", primera.c.primera_fecha)).label("duracion_seg"),
+        )
+        .join(primera, ReglamentoDB.id == primera.c.reglamento_id)
+    )
+
+    if categoria:
+        q = q.filter(ReglamentoDB.categoria == categoria)
+
+    rows = q.order_by(desc("duracion_seg")).limit(limit).all()
+
+    return [
+        {
+            "id": reg.id,
+            "numero": reg.numero,
+            "anio": reg.anio,
+            "ministerio": reg.ministerio,
+            "materia": reg.materia,
+            "estado": reg.estado,
+            "categoria": reg.categoria,
+            "primera_etapa": str(primera_fecha) if primera_fecha else None,
+            "ultima_etapa": str(ultima_fecha) if ultima_fecha else None,
+            "dias_tramitacion": (ultima_fecha - primera_fecha).days if primera_fecha and ultima_fecha else None,
+            "total_etapas": total_etapas,
+        }
+        for reg, primera_fecha, ultima_fecha, total_etapas, _ in rows
+    ]
+
+
+@app.get("/reglamentos/stats/mas-etapas", tags=["Reglamentos"])
+def reglamentos_mas_etapas(
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """Reglamentos with the most stages/etapas. More stages often indicate
+    complex reviews with multiple back-and-forth between sectors."""
+    sub = (
+        db.query(
+            ReglamentoEtapaDB.reglamento_id,
+            func.count(ReglamentoEtapaDB.id).label("total_etapas"),
+        )
+        .group_by(ReglamentoEtapaDB.reglamento_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(ReglamentoDB, sub.c.total_etapas)
+        .join(sub, ReglamentoDB.id == sub.c.reglamento_id)
+        .order_by(desc(sub.c.total_etapas))
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": reg.id,
+            "numero": reg.numero,
+            "anio": reg.anio,
+            "ministerio": reg.ministerio,
+            "materia": reg.materia,
+            "estado": reg.estado,
+            "categoria": reg.categoria,
+            "total_etapas": total_etapas,
+        }
+        for reg, total_etapas in rows
+    ]
+
+
+@app.get("/reglamentos/{reglamento_id}", response_model=ReglamentoDetail, tags=["Reglamentos"])
+def get_reglamento(reglamento_id: int, db: Session = Depends(get_db)):
+    """Get a single reglamento with all its etapas/stages."""
+    row = (
+        db.query(ReglamentoDB)
+        .options(joinedload(ReglamentoDB.etapas))
+        .filter(ReglamentoDB.id == reglamento_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Reglamento not found")
+    return row
