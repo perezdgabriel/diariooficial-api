@@ -37,6 +37,7 @@ class Etapa(BaseModel):
     observaciones: Optional[str] = None
     documento: Optional[str] = None
     documento_url: Optional[str] = None
+    gobierno_actual: bool = False
 
 
 class Reglamento(BaseModel):

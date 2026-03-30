@@ -13,6 +13,8 @@ from schemas import (
     NormaDestacada,
 )
 
+INICIO_GOBIERNO_ACTUAL = date(2026, 3, 11)
+
 app = FastAPI(
     title="Diario Oficial de Chile — API",
     description="Public API to query normas generales and CGR reglamentos.",
@@ -139,6 +141,7 @@ def list_reglamentos(
     estado: Optional[str] = Query(None, description="Filter by estado (partial match)"),
     date_from: Optional[date] = Query(None, description="Fecha ingreso from (YYYY-MM-DD)"),
     date_to: Optional[date] = Query(None, description="Fecha ingreso to (YYYY-MM-DD)"),
+    gobierno_actual: Optional[bool] = Query(None, description="Only reglamentos with etapa activity from 2026-03-11 onwards"),
     offset: int = Query(0, ge=0),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
     db: Session = Depends(get_db),
@@ -164,6 +167,22 @@ def list_reglamentos(
         filters.append(ReglamentoDB.fecha_ingreso >= date_from)
     if date_to:
         filters.append(ReglamentoDB.fecha_ingreso <= date_to)
+    if gobierno_actual is True:
+        filters.append(
+            ReglamentoDB.id.in_(
+                db.query(ReglamentoEtapaDB.reglamento_id)
+                .filter(ReglamentoEtapaDB.fecha >= INICIO_GOBIERNO_ACTUAL)
+                .distinct()
+            )
+        )
+    elif gobierno_actual is False:
+        filters.append(
+            ~ReglamentoDB.id.in_(
+                db.query(ReglamentoEtapaDB.reglamento_id)
+                .filter(ReglamentoEtapaDB.fecha >= INICIO_GOBIERNO_ACTUAL)
+                .distinct()
+            )
+        )
 
     for f in filters:
         q = q.filter(f)
@@ -366,6 +385,11 @@ def get_reglamento(reglamento_id: int, db: Session = Depends(get_db)):
     )
     if not row:
         raise HTTPException(status_code=404, detail="Reglamento not found")
+
+    # Add gobierno_actual flag to each etapa
+    for etapa in row.etapas:
+        etapa.gobierno_actual = etapa.fecha is not None and etapa.fecha >= INICIO_GOBIERNO_ACTUAL
+
     return row
 
 
