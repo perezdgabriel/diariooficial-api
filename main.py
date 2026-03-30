@@ -62,6 +62,21 @@ def list_normas(
     return NormasResponse(count=total, data=rows)
 
 
+@app.get("/normas/destacadas", response_model=list[NormaDestacada], tags=["Normas"])
+def list_destacadas(
+    target_date: Optional[date] = Query(None, alias="date", description="Filter by date (YYYY-MM-DD). Defaults to most recent."),
+    limit: int = Query(3, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    """Get the AI-highlighted top norms. Defaults to the most recent date available."""
+    q = db.query(NormaDestacadaDB).options(joinedload(NormaDestacadaDB.norma))
+
+    if target_date:
+        q = q.filter(NormaDestacadaDB.date == target_date)
+
+    return q.order_by(NormaDestacadaDB.date.desc()).limit(limit).all()
+
+
 @app.get("/normas/{cve}", response_model=Norma)
 def get_norma_by_cve(cve: str, db: Session = Depends(get_db)):
     """Get a single norma by its CVE code."""
@@ -354,21 +369,3 @@ def get_reglamento(reglamento_id: int, db: Session = Depends(get_db)):
     return row
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  NORMAS DESTACADAS — AI-generated highlights
-# ═══════════════════════════════════════════════════════════════════════════════
-
-
-@app.get("/normas/destacadas", response_model=list[NormaDestacada], tags=["Normas"])
-def list_destacadas(
-    target_date: Optional[date] = Query(None, alias="date", description="Filter by date (YYYY-MM-DD). Defaults to most recent."),
-    limit: int = Query(3, ge=1, le=10),
-    db: Session = Depends(get_db),
-):
-    """Get the AI-highlighted top norms. Defaults to the most recent date available."""
-    q = db.query(NormaDestacadaDB).options(joinedload(NormaDestacadaDB.norma))
-
-    if target_date:
-        q = q.filter(NormaDestacadaDB.date == target_date)
-    
-    return q.order_by(NormaDestacadaDB.date.desc()).limit(limit).all()
