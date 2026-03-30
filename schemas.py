@@ -80,3 +80,12 @@ class ReglamentoTimeline(BaseModel):
     ultima_etapa_fecha: Optional[date] = None
     ultima_etapa_accion: Optional[str] = None
     total_etapas: int
+
+
+class NormaDestacada(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: int
+    date: date
+    explanation: str
+    norma: Norma

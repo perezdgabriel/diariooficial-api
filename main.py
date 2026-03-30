@@ -5,11 +5,12 @@ from fastapi import FastAPI, Query, HTTPException, Depends
 from sqlalchemy import func, desc, case
 from sqlalchemy.orm import Session, joinedload
 
-from db import get_db, NormaGeneralDB, ReglamentoDB, ReglamentoEtapaDB
+from db import get_db, NormaGeneralDB, ReglamentoDB, ReglamentoEtapaDB, NormaDestacadaDB
 from schemas import (
     Norma, NormasResponse,
     Reglamento, ReglamentoDetail, ReglamentosResponse,
     ReglamentoStats, ReglamentoTimeline,
+    NormaDestacada,
 )
 
 app = FastAPI(
@@ -351,3 +352,23 @@ def get_reglamento(reglamento_id: int, db: Session = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Reglamento not found")
     return row
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NORMAS DESTACADAS — AI-generated highlights
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@app.get("/normas/destacadas", response_model=list[NormaDestacada], tags=["Normas"])
+def list_destacadas(
+    target_date: Optional[date] = Query(None, alias="date", description="Filter by date (YYYY-MM-DD). Defaults to most recent."),
+    limit: int = Query(3, ge=1, le=10),
+    db: Session = Depends(get_db),
+):
+    """Get the AI-highlighted top norms. Defaults to the most recent date available."""
+    q = db.query(NormaDestacadaDB).options(joinedload(NormaDestacadaDB.norma))
+
+    if target_date:
+        q = q.filter(NormaDestacadaDB.date == target_date)
+    
+    return q.order_by(NormaDestacadaDB.date.desc()).limit(limit).all()

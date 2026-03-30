@@ -61,6 +61,18 @@ class ReglamentoEtapaDB(Base):
     reglamento = relationship("ReglamentoDB", back_populates="etapas")
 
 
+class NormaDestacadaDB(Base):
+    __tablename__ = "normas_destacadas"
+
+    id = Column(BigInteger, primary_key=True)
+    norma_id = Column(BigInteger, ForeignKey("normas_generales.id", ondelete="CASCADE"), nullable=False, unique=True)
+    date = Column(Date, nullable=False)
+    explanation = Column(Text, nullable=False)
+    created_at = Column(DateTime)
+
+    norma = relationship("NormaGeneralDB")
+
+
 def get_db():
     db = SessionLocal()
     try:
