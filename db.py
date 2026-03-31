@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, BigInteger, Date, Text, ForeignKey, DateTime
+from sqlalchemy import create_engine, Column, BigInteger, Boolean, Date, Text, ForeignKey, DateTime
 from sqlalchemy.orm import sessionmaker, DeclarativeBase, relationship
 
 from config import settings
@@ -38,6 +38,7 @@ class ReglamentoDB(Base):
     fecha_ingreso = Column(Date)
     estado = Column(Text)
     categoria = Column(Text, nullable=False)
+    reingresado = Column(Boolean, nullable=False, server_default="false")
     created_at = Column(DateTime)
     updated_at = Column(DateTime)
 

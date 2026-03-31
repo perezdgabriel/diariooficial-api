@@ -141,6 +141,7 @@ def list_reglamentos(
     estado: Optional[str] = Query(None, description="Filter by estado (partial match)"),
     date_from: Optional[date] = Query(None, description="Fecha ingreso from (YYYY-MM-DD)"),
     date_to: Optional[date] = Query(None, description="Fecha ingreso to (YYYY-MM-DD)"),
+    reingresado: Optional[bool] = Query(None, description="Filter by reingresado (retirado y luego reingresado)"),
     gobierno_actual: Optional[bool] = Query(None, description="Only reglamentos with etapa activity from 2026-03-11 onwards"),
     offset: int = Query(0, ge=0),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
@@ -163,6 +164,8 @@ def list_reglamentos(
         filters.append(ReglamentoDB.anio == anio)
     if estado:
         filters.append(ReglamentoDB.estado.ilike(f"%{estado}%"))
+    if reingresado is not None:
+        filters.append(ReglamentoDB.reingresado == reingresado)
     if date_from:
         filters.append(ReglamentoDB.fecha_ingreso >= date_from)
     if date_to:

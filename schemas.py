@@ -52,6 +52,7 @@ class Reglamento(BaseModel):
     fecha_ingreso: Optional[date] = None
     estado: Optional[str] = None
     categoria: str
+    reingresado: bool = False
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
